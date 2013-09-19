@@ -7,7 +7,7 @@
 BEGIN;
 
 CREATE VIEW "liquid_feedback_version" AS
-  SELECT * FROM (VALUES ('2.2.1', 2, 2, 1))
+  SELECT * FROM (VALUES ('2.2.4', 2, 2, 4))
   AS "subquery"("string", "major", "minor", "revision");
 
 
@@ -54,6 +54,17 @@ COMMENT ON FUNCTION "highlight"
 -------------------------
 
 
+CREATE TABLE "temporary_transaction_data" (
+        PRIMARY KEY ("txid", "key"),
+        "txid"                  INT8            DEFAULT txid_current(),
+        "key"                   TEXT,
+        "value"                 TEXT            NOT NULL );
+
+COMMENT ON TABLE "temporary_transaction_data" IS 'Table to store temporary transaction data; shall be emptied before a transaction is committed';
+
+COMMENT ON COLUMN "temporary_transaction_data"."txid" IS 'Value returned by function txid_current(); should be added to WHERE clause, when doing SELECT on this table, but ignored when doing DELETE on this table';
+
+
 CREATE TABLE "system_setting" (
         "member_ttl"            INTERVAL,
         "gui_preset"            TEXT );
@@ -95,6 +106,7 @@ CREATE TABLE "member" (
         "activated"             TIMESTAMPTZ,
         "last_activity"         DATE,
         "last_login"            TIMESTAMPTZ,
+        "last_delegation_check" TIMESTAMPTZ,
         "certified"             TIMESTAMPTZ,
         "certifier_id"          INT4,
         "login"                 TEXT            UNIQUE,
@@ -109,6 +121,7 @@ CREATE TABLE "member" (
         "notify_email_secret_expiry"   TIMESTAMPTZ,
         "notify_email_lock_expiry"     TIMESTAMPTZ,
         "notify_level"          "notify_level",
+        "login_recovery_expiry"        TIMESTAMPTZ,
         "password_reset_secret"        TEXT     UNIQUE,
         "password_reset_secret_expiry" TIMESTAMPTZ,
         "name"                  TEXT            UNIQUE,
@@ -154,7 +167,7 @@ CREATE TRIGGER "update_text_search_data"
     "realname", "external_memberships", "external_posts", "statement" );
 
 CREATE FUNCTION nin_insert_trigger()
-  RETURNS TRIGGER 
+  RETURNS TRIGGER
   LANGUAGE plpgsql VOLATILE AS $$
     DECLARE myrec int;
     BEGIN
@@ -180,6 +193,7 @@ COMMENT ON COLUMN "member"."admin_comment"        IS 'Hidden comment for adminis
 COMMENT ON COLUMN "member"."activated"            IS 'Timestamp of first activation of account (i.e. usage of "invite_code"); required to be set for "active" members';
 COMMENT ON COLUMN "member"."last_activity"        IS 'Date of last activity of member; required to be set for "active" members';
 COMMENT ON COLUMN "member"."last_login"           IS 'Timestamp of last login';
+COMMENT ON COLUMN "member"."last_delegation_check" IS 'Timestamp of last delegation check (i.e. confirmation of all unit and area delegations)';
 COMMENT ON COLUMN "member"."certified"            IS 'Timestamp of certification of account';
 COMMENT ON COLUMN "member"."certifier_id"         IS 'Auditor member who certified this account';
 COMMENT ON COLUMN "member"."login"                IS 'Login name';
@@ -194,6 +208,9 @@ COMMENT ON COLUMN "member"."notify_email_secret"        IS 'Secret sent to the a
 COMMENT ON COLUMN "member"."notify_email_secret_expiry" IS 'Expiry date/time for "notify_email_secret"';
 COMMENT ON COLUMN "member"."notify_email_lock_expiry"   IS 'Date/time until no further email confirmation mails may be sent (abuse protection)';
 COMMENT ON COLUMN "member"."notify_level"         IS 'Selects which event notifications are to be sent to the "notify_email" mail address, may be NULL if member did not make any selection yet';
+COMMENT ON COLUMN "member"."login_recovery_expiry"        IS 'Date/time after which another login recovery attempt is allowed';
+COMMENT ON COLUMN "member"."password_reset_secret"        IS 'Secret string sent via e-mail for password recovery';
+COMMENT ON COLUMN "member"."password_reset_secret_expiry" IS 'Date/time until the password recovery secret is valid, and date/time after which another password recovery attempt is allowed';
 COMMENT ON COLUMN "member"."name"                 IS 'Distinct name of the member, may be NULL if account has not been activated yet';
 COMMENT ON COLUMN "member"."firstname"            IS 'Real first of the member, may be NULL if account has not been activated yet';
 COMMENT ON COLUMN "member"."lastname"             IS 'Real last of the member, may be NULL if account has not been activated yet';
@@ -471,7 +488,7 @@ CREATE TABLE "issue" (
         "status_quo_schulze_rank" INT4,
         "title"			TEXT,
         "brief_description"     TEXT,
-        "keywords"              TSVECTOR, 
+        "keywords"              TSVECTOR,
         "problem_description"   TEXT,
         "aim_description"       TEXT,
         CONSTRAINT "admission_time_not_null_unless_instantly_accepted" CHECK (
@@ -1280,6 +1297,7 @@ CREATE TABLE "session" (
         "additional_secret"     TEXT,
         "expiry"                TIMESTAMPTZ     NOT NULL DEFAULT now() + '24 hours',
         "member_id"             INT8            REFERENCES "member" ("id") ON DELETE SET NULL,
+        "needs_delegation_check" BOOLEAN        NOT NULL DEFAULT FALSE,
         "lang"                  TEXT );
 CREATE INDEX "session_expiry_idx" ON "session" ("expiry");
 
@@ -1288,6 +1306,7 @@ COMMENT ON TABLE "session" IS 'Sessions, i.e. for a web-frontend or API layer';
 COMMENT ON COLUMN "session"."ident"             IS 'Secret session identifier (i.e. random string)';
 COMMENT ON COLUMN "session"."additional_secret" IS 'Additional field to store a secret, which can be used against CSRF attacks';
 COMMENT ON COLUMN "session"."member_id"         IS 'Reference to member, who is logged in';
+COMMENT ON COLUMN "session"."needs_delegation_check" IS 'Set to TRUE, if member must perform a delegation check to proceed with login; see column "last_delegation_check" in "member" table';
 COMMENT ON COLUMN "session"."lang"              IS 'Language code of the selected language';
 
 CREATE TABLE checked_event (
@@ -1729,6 +1748,14 @@ CREATE FUNCTION "forbid_changes_on_closed_issue_trigger"()
       "issue_id_v" "issue"."id"%TYPE;
       "issue_row"  "issue"%ROWTYPE;
     BEGIN
+      IF EXISTS (
+        SELECT NULL FROM "temporary_transaction_data"
+        WHERE "txid" = txid_current()
+        AND "key" = 'override_protection_triggers'
+        AND "value" = TRUE::TEXT
+      ) THEN
+        RETURN NULL;
+      END IF;
       IF TG_OP = 'DELETE' THEN
         "issue_id_v" := OLD."issue_id";
       ELSE
@@ -1736,7 +1763,12 @@ CREATE FUNCTION "forbid_changes_on_closed_issue_trigger"()
       END IF;
       SELECT INTO "issue_row" * FROM "issue"
         WHERE "id" = "issue_id_v" FOR SHARE;
-      IF "issue_row"."closed" NOTNULL THEN
+      IF (
+        "issue_row"."closed" NOTNULL OR (
+          "issue_row"."state" = 'voting' AND
+          "issue_row"."phase_finished" NOTNULL
+        )
+      ) THEN
         IF
           TG_RELID = 'direct_voter'::regclass AND
           TG_OP = 'UPDATE'
@@ -1749,14 +1781,7 @@ CREATE FUNCTION "forbid_changes_on_closed_issue_trigger"()
             RETURN NULL;  -- allows changing of voter comment
           END IF;
         END IF;
-        RAISE EXCEPTION 'Tried to modify data belonging to a closed issue.';
-      ELSIF
-        "issue_row"."state" = 'voting' AND
-        "issue_row"."phase_finished" NOTNULL
-      THEN
-        IF TG_RELID = 'vote'::regclass THEN
-          RAISE EXCEPTION 'Tried to modify data after voting has been closed.';
-        END IF;
+        RAISE EXCEPTION 'Tried to modify data after voting has been closed.';
       END IF;
       RETURN NULL;
     END;
@@ -2102,7 +2127,7 @@ CREATE VIEW "unit_member_count" AS
     count("member"."id") AS "member_count"
   FROM "unit"
   LEFT JOIN "privilege"
-  ON "privilege"."unit_id" = "unit"."id" 
+  ON "privilege"."unit_id" = "unit"."id"
   AND "privilege"."voting_right"
   LEFT JOIN "member"
   ON "member"."id" = "privilege"."member_id"
@@ -2370,9 +2395,6 @@ CREATE VIEW "event_seen_by_member" AS
   LEFT JOIN "interest"
     ON "member"."id" = "interest"."member_id"
     AND "event"."issue_id" = "interest"."issue_id"
-  LEFT JOIN "supporter"
-    ON "member"."id" = "supporter"."member_id"
-    AND "event"."initiative_id" = "supporter"."initiative_id"
   LEFT JOIN "ignored_member"
     ON "member"."id" = "ignored_member"."member_id"
     AND "event"."member_id" = "ignored_member"."other_member_id"
@@ -2380,7 +2402,6 @@ CREATE VIEW "event_seen_by_member" AS
     ON "member"."id" = "ignored_initiative"."member_id"
     AND "event"."initiative_id" = "ignored_initiative"."initiative_id"
   WHERE (
-    "supporter"."member_id" NOTNULL OR
     "interest"."member_id" NOTNULL OR
     ( "membership"."member_id" NOTNULL AND
       "event"."event" IN (
@@ -2431,9 +2452,6 @@ CREATE VIEW "selected_event_seen_by_member" AS
   LEFT JOIN "interest"
     ON "member"."id" = "interest"."member_id"
     AND "event"."issue_id" = "interest"."issue_id"
-  LEFT JOIN "supporter"
-    ON "member"."id" = "supporter"."member_id"
-    AND "event"."initiative_id" = "supporter"."initiative_id"
   LEFT JOIN "ignored_member"
     ON "member"."id" = "ignored_member"."member_id"
     AND "event"."member_id" = "ignored_member"."other_member_id"
@@ -2457,7 +2475,6 @@ CREATE VIEW "selected_event_seen_by_member" AS
         'discussion',
         'canceled_after_revocation_during_discussion' ) ) )
   AND (
-    "supporter"."member_id" NOTNULL OR
     "interest"."member_id" NOTNULL OR
     ( "membership"."member_id" NOTNULL AND
       "event"."event" IN (
@@ -3078,7 +3095,7 @@ CREATE VIEW "remaining_harmonic_initiative_weight_dummies" AS
   WHERE "harmonic_weight" ISNULL;
 
 COMMENT ON VIEW "remaining_harmonic_initiative_weight_dummies" IS 'Helper view for function "set_harmonic_initiative_weights" providing dummy weights of zero value, which are needed for corner cases where there are no supporters for an initiative at all';
-    
+
 
 CREATE FUNCTION "set_harmonic_initiative_weights"
   ( "issue_id_p" "issue"."id"%TYPE )
@@ -3795,6 +3812,9 @@ CREATE FUNCTION "close_voting"("issue_id_p" "issue"."id"%TYPE)
       PERFORM "require_transaction_isolation"();
       SELECT "area_id" INTO "area_id_v" FROM "issue" WHERE "id" = "issue_id_p";
       SELECT "unit_id" INTO "unit_id_v" FROM "area"  WHERE "id" = "area_id_v";
+      -- override protection triggers:
+      INSERT INTO "temporary_transaction_data" ("key", "value")
+        VALUES ('override_protection_triggers', TRUE::TEXT);
       -- delete timestamp of voting comment:
       UPDATE "direct_voter" SET "comment_changed" = NULL
         WHERE "issue_id" = "issue_id_p";
@@ -3823,6 +3843,9 @@ CREATE FUNCTION "close_voting"("issue_id_p" "issue"."id"%TYPE)
       UPDATE "direct_voter" SET "weight" = 1
         WHERE "issue_id" = "issue_id_p";
       PERFORM "add_vote_delegations"("issue_id_p");
+      -- finish overriding protection triggers (avoids garbage):
+      DELETE FROM "temporary_transaction_data"
+        WHERE "key" = 'override_protection_triggers';
       -- materialize battle_view:
       -- NOTE: "closed" column of issue must be set at this point
       DELETE FROM "battle" WHERE "issue_id" = "issue_id_p";
@@ -4463,17 +4486,14 @@ COMMENT ON FUNCTION "check_everything"() IS 'Amongst other regular tasks this fu
 CREATE FUNCTION "clean_issue"("issue_id_p" "issue"."id"%TYPE)
   RETURNS VOID
   LANGUAGE 'plpgsql' VOLATILE AS $$
-    DECLARE
-      "issue_row" "issue"%ROWTYPE;
     BEGIN
-      SELECT * INTO "issue_row"
-        FROM "issue" WHERE "id" = "issue_id_p"
-        FOR UPDATE;
-      IF "issue_row"."cleaned" ISNULL THEN
-        UPDATE "issue" SET
-          "state"  = 'voting',
-          "closed" = NULL
-          WHERE "id" = "issue_id_p";
+      IF EXISTS (
+        SELECT NULL FROM "issue" WHERE "id" = "issue_id_p" AND "cleaned" ISNULL
+      ) THEN
+        -- override protection triggers:
+        INSERT INTO "temporary_transaction_data" ("key", "value")
+          VALUES ('override_protection_triggers', TRUE::TEXT);
+        -- clean data:
         DELETE FROM "delegating_voter"
           WHERE "issue_id" = "issue_id_p";
         DELETE FROM "direct_voter"
@@ -4494,11 +4514,11 @@ CREATE FUNCTION "clean_issue"("issue_id_p" "issue"."id"%TYPE)
           USING "initiative"  -- NOTE: due to missing index on issue_id
           WHERE "initiative"."issue_id" = "issue_id_p"
           AND "supporter"."initiative_id" = "initiative_id";
-        UPDATE "issue" SET
-          "state"   = "issue_row"."state",
-          "closed"  = "issue_row"."closed",
-          "cleaned" = now()
-          WHERE "id" = "issue_id_p";
+        -- mark issue as cleaned:
+        UPDATE "issue" SET "cleaned" = now() WHERE "id" = "issue_id_p";
+        -- finish overriding protection triggers (avoids garbage):
+        DELETE FROM "temporary_transaction_data"
+          WHERE "key" = 'override_protection_triggers';
       END IF;
       RETURN;
     END;
@@ -4513,6 +4533,7 @@ CREATE FUNCTION "delete_member"("member_id_p" "member"."id"%TYPE)
     BEGIN
       UPDATE "member" SET
         "last_login"                   = NULL,
+        "last_delegation_check"        = NULL,
         "login"                        = NULL,
         "password"                     = NULL,
         "locked"                       = TRUE,
@@ -4522,6 +4543,7 @@ CREATE FUNCTION "delete_member"("member_id_p" "member"."id"%TYPE)
         "notify_email_secret"          = NULL,
         "notify_email_secret_expiry"   = NULL,
         "notify_email_lock_expiry"     = NULL,
+        "login_recovery_expiry"        = NULL,
         "password_reset_secret"        = NULL,
         "password_reset_secret_expiry" = NULL,
         "organizational_unit"          = NULL,
@@ -4570,12 +4592,14 @@ CREATE FUNCTION "delete_private_data"()
   RETURNS VOID
   LANGUAGE 'plpgsql' VOLATILE AS $$
     BEGIN
+      DELETE FROM "temporary_transaction_data";
       DELETE FROM "member" WHERE "activated" ISNULL;
       UPDATE "member" SET
         "invite_code"                  = NULL,
         "invite_code_expiry"           = NULL,
         "admin_comment"                = NULL,
         "last_login"                   = NULL,
+        "last_delegation_check"        = NULL,
         "login"                        = NULL,
         "password"                     = NULL,
         "lang"                         = NULL,
@@ -4585,6 +4609,7 @@ CREATE FUNCTION "delete_private_data"()
         "notify_email_secret_expiry"   = NULL,
         "notify_email_lock_expiry"     = NULL,
         "notify_level"                 = NULL,
+        "login_recovery_expiry"        = NULL,
         "password_reset_secret"        = NULL,
         "password_reset_secret_expiry" = NULL,
         "organizational_unit"          = NULL,
