@@ -44,7 +44,7 @@ int main(int argc, char **argv) {
     fprintf(out, "<conninfo> is specified by PostgreSQL's libpq,\n");
     fprintf(out, "see http://www.postgresql.org/docs/9.1/static/libpq-connect.html\n");
     fprintf(out, "\n");
-    fprintf(out, "Example: %s dbname=liquid_feedback\n", argv[0]);
+    fprintf(out, "Example: %s dbname=parlamento_elettronico_m5s\n", argv[0]);
     fprintf(out, "\n");
     return argc == 1 ? 1 : 0;
   }
@@ -84,22 +84,6 @@ int main(int argc, char **argv) {
     PQresultStatus(res) != PGRES_TUPLES_OK
   ) {
     fprintf(stderr, "Error while executing SQL command deleting expired sessions:\n%s", PQresultErrorMessage(res));
-    err = 1;
-    PQclear(res);
-  } else {
-    PQclear(res);
-  }
- 
-  // check member activity:
-  res = PQexec(db, "SET TRANSACTION ISOLATION LEVEL READ COMMITTED; SELECT \"check_activity\"()");
-  if (!res) {
-    fprintf(stderr, "Error in pqlib while sending SQL command checking member activity\n");
-    err = 1;
-  } else if (
-    PQresultStatus(res) != PGRES_COMMAND_OK &&
-    PQresultStatus(res) != PGRES_TUPLES_OK
-  ) {
-    fprintf(stderr, "Error while executing SQL command checking member activity:\n%s", PQresultErrorMessage(res));
     err = 1;
     PQclear(res);
   } else {

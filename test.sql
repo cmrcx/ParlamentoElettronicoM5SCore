@@ -6,6 +6,8 @@ BEGIN;
 -- set transaction isolation level to be able to call "check_everything"() function
 SET TRANSACTION ISOLATION LEVEL REPEATABLE READ;
 
+INSERT INTO "system_setting" ("gui_preset") VALUES ('M5S_bs');
+
 INSERT INTO "member" ("activated", "last_activity", "active", "login", "name") VALUES
   ('now', 'now', TRUE, 'user1',  'User #1'),   -- id  1
   ('now', 'now', TRUE, 'user2',  'User #2'),   -- id  2
@@ -101,38 +103,6 @@ INSERT INTO "membership" ("area_id", "member_id") VALUES
   (4, 13),
   (4, 22);
 
--- global delegations
-INSERT INTO "delegation"
-  ("truster_id", "scope", "unit_id", "trustee_id") VALUES
-  ( 1, 'unit', 1,  9),
-  ( 2, 'unit', 1, 11),
-  ( 3, 'unit', 1, 12),
-  ( 4, 'unit', 1, 13),
-  ( 5, 'unit', 1, 14),
-  ( 6, 'unit', 1,  7),
-  ( 7, 'unit', 1,  8),
-  ( 8, 'unit', 1,  6),
-  (10, 'unit', 1,  9),
-  (11, 'unit', 1,  9),
-  (12, 'unit', 1, 21),
-  (15, 'unit', 1, 10),
-  (16, 'unit', 1, 17),
-  (17, 'unit', 1, 19),
-  (18, 'unit', 1, 19),
-  (23, 'unit', 1, 22);
-
--- delegations for topics
-INSERT INTO "delegation"
-  ("area_id", "truster_id", "scope", "trustee_id") VALUES
-  (1,  3, 'area', 17),
-  (2,  5, 'area', 10),
-  (2,  9, 'area', 10),
-  (3,  4, 'area', 14),
-  (3, 16, 'area', 20),
-  (3, 19, 'area', 20),
-  (4,  5, 'area', 13),
-  (4, 12, 'area', 22);
-
 INSERT INTO "issue" ("area_id", "policy_id") VALUES
   (3, 1);  -- id 1
 
@@ -145,14 +115,14 @@ INSERT INTO "initiative" ("issue_id", "name") VALUES
   (1, 'Initiative #6'),  -- id 6
   (1, 'Initiative #7');  -- id 7
 
-INSERT INTO "draft" ("initiative_id", "author_id", "content") VALUES
-  (1, 17, 'Lorem ipsum...'),  -- id 1
-  (2, 20, 'Lorem ipsum...'),  -- id 2
-  (3, 20, 'Lorem ipsum...'),  -- id 3
-  (4, 20, 'Lorem ipsum...'),  -- id 4
-  (5, 14, 'Lorem ipsum...'),  -- id 5
-  (6, 11, 'Lorem ipsum...'),  -- id 6
-  (7, 12, 'Lorem ipsum...');  -- id 7
+INSERT INTO "draft" ("initiative_id", "author_id", "name", "content") VALUES
+  (1, 17, 'Initiative #1', 'Lorem ipsum...'),  -- id 1
+  (2, 20, 'Initiative #2', 'Lorem ipsum...'),  -- id 2
+  (3, 20, 'Initiative #3', 'Lorem ipsum...'),  -- id 3
+  (4, 20, 'Initiative #4', 'Lorem ipsum...'),  -- id 4
+  (5, 14, 'Initiative #5', 'Lorem ipsum...'),  -- id 5
+  (6, 11, 'Initiative #6', 'Lorem ipsum...'),  -- id 6
+  (7, 12, 'Initiative #7', 'Lorem ipsum...');  -- id 7
 
 INSERT INTO "initiator" ("initiative_id", "member_id") VALUES
   (1, 17),
@@ -202,11 +172,11 @@ INSERT INTO "initiative" ("issue_id", "name") VALUES
   (2, 'Initiative C'),  -- id 10
   (2, 'Initiative D');  -- id 11
 
-INSERT INTO "draft" ("initiative_id", "author_id", "content") VALUES
-  ( 8, 1, 'Lorem ipsum...'),  -- id  8
-  ( 9, 2, 'Lorem ipsum...'),  -- id  9
-  (10, 3, 'Lorem ipsum...'),  -- id 10
-  (11, 4, 'Lorem ipsum...');  -- id 11
+INSERT INTO "draft" ("initiative_id", "author_id", "name", "content") VALUES
+  ( 8, 1, 'Initiative A', 'Lorem ipsum...'),  -- id  8
+  ( 9, 2, 'Initiative B', 'Lorem ipsum...'),  -- id  9
+  (10, 3, 'Initiative C', 'Lorem ipsum...'),  -- id 10
+  (11, 4, 'Initiative D', 'Lorem ipsum...');  -- id 11
 
 INSERT INTO "initiator" ("initiative_id", "member_id") VALUES
   ( 8, 1),
@@ -239,7 +209,7 @@ INSERT INTO "supporter" ("member_id", "initiative_id", "draft_id") VALUES
   (6,  9,  9),
   (6, 10, 10),
   (6, 11, 11);
- 
+
 SELECT "time_warp"();
 SELECT "time_warp"();
 SELECT "time_warp"();
