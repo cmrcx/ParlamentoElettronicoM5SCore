@@ -33,6 +33,7 @@ su $dbuser  -c " dropdb $dbname "
 su $dbuser  -c " createdb $dbname "
 su $dbuser  -c " createlang plpgsql $dbname || true "
 su $dbuser  -c " psql -v ON_ERROR_STOP=1 -q -f core.sql $dbname "
+su $dbuser  -c " psql -v ON_ERROR_STOP=1 -q -f sensitive_data.sql $dbname "
 
 case "$datasql" in
   *.bz2)
